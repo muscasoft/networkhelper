@@ -1,0 +1,19 @@
+services:
+
+  networkhelper:
+    build: ./helper
+    container_name: networkhelper
+    restart: unless-stopped
+    user: "${UID}:${GID}"
+    environment:
+      - TZ=Europe/Amsterdam
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - caddy_net
+
+networks:
+
+  caddy_net:
+    name: ${CADDY_NETWORK_NAME}
+    external: true
