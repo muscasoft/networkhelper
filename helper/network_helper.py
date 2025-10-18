@@ -34,7 +34,6 @@ EVENT_TYPE = "Type"
 LOG_PREFIX = "[docker-helper]"
 LOG_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-CADDY_SOCKET = os.getenv("CADDY_SOCKET", "/var/run/caddy/admin.sock") 
 AUTHELIA_URL = os.getenv("AUTHELIA_URL", "http://authelia:9091")
 CADDY_API_ERROR_PREFIX = "Caddy API error: "
 
@@ -77,11 +76,14 @@ def log(msg: str):
     now = datetime.datetime.now().strftime(LOG_TIMESTAMP_FORMAT)
     print(f"[{now}] {LOG_PREFIX} {msg}", flush=True)
 
-def connect_container_to_network(container_name: str, network_name: str):
+#def connect_container_to_network(container_name: str, network_name: str):
+def connect_container_to_network(logmessage: str, container_name: str,  label_key: str, network_name: str):
     """Connect a container to a Docker network if not already connected."""
     try:
-        network = client.networks.get(network_name)
+        container_name = label_key[len(LABEL_NAMESPACE_CONNECT):]
         container = client.containers.get(container_name)
+        network = client.networks.get(network_name)
+        log(logmessage.format(container=container_name, target=container, network=network_name))
         connected_networks = container.attrs[ATTRS_NETWORK_SETTINGS][ATTRS_NETWORKS].keys()
         if network_name not in connected_networks:
             log(LOG_MESSAGES["connecting"].format(container=container_name, network=network_name))
@@ -91,16 +93,13 @@ def connect_container_to_network(container_name: str, network_name: str):
     except Exception as e:
         log(LOG_MESSAGES["error connect"].format(container=container_name, network=network_name, error=e))
 
-def do_connect_container_to_network(logmessage: str, container_name: str,  label_key: str, label_value: str):
-    target_container = label_key[len(LABEL_NAMESPACE_CONNECT):]
-    log(logmessage.format(container=container_name, target=target_container, network=label_value))
-    connect_container_to_network(target_container, label_value)
-
-def disconnect_container_from_network(container_name: str, network_name: str):
+def disconnect_container_from_network(logmessage: str, container_name: str, label_key: str, network_name: str):
     """Disconnect a container from a Docker network if connected."""
     try:
-        network = client.networks.get(network_name)
+        container_name = label_key[len(LABEL_NAMESPACE_CONNECT):]
         container = client.containers.get(container_name)
+        network = client.networks.get(network_name)
+        log(logmessage.format(container=container_name, target=container_name, network=network_name))
         connected_networks = container.attrs[ATTRS_NETWORK_SETTINGS][ATTRS_NETWORKS].keys()
         if network_name in connected_networks:
             log(LOG_MESSAGES["disconnecting"].format(container=container_name, network=network_name))
@@ -109,11 +108,6 @@ def disconnect_container_from_network(container_name: str, network_name: str):
             log(LOG_MESSAGES["not connected"].format(container=container_name))
     except Exception as e:
         log(LOG_MESSAGES["error disconnect"].format(container=container_name, network=network_name, error=e))
-
-def do_disconnect_container_from_network(logmessage: str, container_name: str, label_key: str, label_value: str):
-    target_container = label_key[len(LABEL_NAMESPACE_CONNECT):]
-    log(logmessage.format(container=container_name, target=target_container, network=label_value))
-    connect_container_to_network(target_container, label_value)
 
 class UnixSocketHTTPConnection(http.client.HTTPConnection):
     """Return an HTTPConnection object that communicates with Caddy over a Unix socket."""
@@ -162,8 +156,8 @@ def set_login_for_domain(domain: str, policy: str, container_url: str) -> None:
     """Add a login configuration for a domain to Caddy via Unix socket."""
     try:
         caddy_config = build_caddy_config(domain, container_url)
-        conn = UnixSocketHTTPConnection(CADDY_SOCKET)
         body_str = json.dumps(caddy_config)
+        conn = http.client.HTTPConnection("localhost", 2019)
         conn.request(
             "POST",
             "/config/",
@@ -182,7 +176,7 @@ def set_login_for_domain(domain: str, policy: str, container_url: str) -> None:
 def remove_login_for_domain(domain: str) -> None:
     """Remove login configuration for a domain from Caddy."""
     try:
-        conn = UnixSocketHTTPConnection(CADDY_SOCKET)
+        conn = http.client.HTTPConnection("localhost", 2019)
 
         # Get current config
         conn.request("GET", "/config/")
@@ -200,7 +194,6 @@ def remove_login_for_domain(domain: str) -> None:
         config["apps"]["http"]["servers"]["srv0"]["routes"] = new_routes
 
        # Post back to Caddy
-        conn = UnixSocketHTTPConnection(CADDY_SOCKET)
         body_str = json.dumps(config)
         conn.request("POST",
                      "/config/",
@@ -251,9 +244,9 @@ def process_labels_from_event(labels: Dict[str, str], action: str):
     connect_labels = {k: v for k, v in labels.items() if k.startswith(LABEL_NAMESPACE_CONNECT)}
     for key, value in connect_labels.items():
         if action == ACTION_START:
-            do_connect_container_to_network(LOG_MESSAGES["event start network"], container_name, key, value)
+            connect_container_to_network(LOG_MESSAGES["event start network"], container_name, key, value)
         elif action == ACTION_KILL:
-            do_disconnect_container_from_network(LOG_MESSAGES["event kill network"], container_name, key, value)
+            disconnect_container_from_network(LOG_MESSAGES["event kill network"], container_name, key, value)
 
     # process login labels for both start and kill
     login_labels = {k: v for k, v in labels.items() if k.startswith(LABEL_NAMESPACE_LOGIN)}
@@ -273,9 +266,9 @@ def process_existing_containers(connect: bool = True):
         connect_labels = {k: v for k, v in labels.items() if k.startswith(LABEL_NAMESPACE_CONNECT)}
         for key, value in connect_labels.items():
             if connect:
-                do_connect_container_to_network(LOG_MESSAGES["initial connect"], container_name, key, value)
+                connect_container_to_network(LOG_MESSAGES["initial connect"], container_name, key, value)
             else:
-                do_disconnect_container_from_network(LOG_MESSAGES["cleanup connect"], container_name, key, value)
+                disconnect_container_from_network(LOG_MESSAGES["cleanup connect"], container_name, key, value)
 
         # also echo login labels on startup
         login_labels = {k: v for k, v in labels.items() if k.startswith(LABEL_NAMESPACE_LOGIN)}
